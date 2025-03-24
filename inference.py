@@ -6,7 +6,7 @@ from utils import load_schema, create_schema_prompt, post_process_sql, post_proc
 from utils import write_json as write_label
 
 from llm_openai import OpenAIModel
-import prompts
+import prompts_ver3 as prompts
 
 from scoring.utils import SQLEvaluator
 from scoring.scorer import Scorer
@@ -29,7 +29,9 @@ def main(args):
     data_num    = args.data_num
     model_name  = args.model_name
     temperature = args.temperature
-
+    max_retry   = args.max_retry
+    threshold_for_classification = args.threshold_for_classification
+    num_consistency_check        = args.num_consistency_check
     # File paths for the dataset and labels
     TABLES_PATH = os.path.join("database", "tables.json")  # JSON containing database schema
 
@@ -83,7 +85,6 @@ def main(args):
     evaluator = SQLEvaluator(data_dir="database", dataset=DB_ID)
 
     # Answerable Classification
-    threshold = 30  # Threshold for answerable classification
 
     classification_result_dict = []
     batch_prompts = [
@@ -104,12 +105,17 @@ def main(args):
         for sample in data
     ]
 
-    responses = model.batch_forward_chatcompletion(batch_prompts)
+    classification_result_dict = {sample["id"]: [] for sample in data}  # Initialize list for each sample ID
+    classification_score_dict_list = {sample["id"]: [] for sample in data}  # Initialize list for each sample ID
 
-    classification_result_dict = {sample["id"]: response for sample, response in zip(data, responses)}
-    classification_score_dict = {
-        sample["id"]: post_process_score(response) for sample, response in zip(data, responses)
-    }
+    for _ in range(num_consistency_check):
+        responses = model.batch_forward_chatcompletion(batch_prompts)
+
+        for sample, response in zip(data, responses):
+            classification_result_dict[sample["id"]].append(response)
+            classification_score_dict_list[sample["id"]].append(post_process_score(response))
+
+    classification_score_dict = {id: sum(scores) / len(scores) for id, scores in classification_score_dict_list.items()}
 
     sql_prompts = [
         [
@@ -132,7 +138,6 @@ def main(args):
     # SQL 결과 저장
     result_dict = {sample["id"]: response for sample, response in zip(data, sql_responses)}
 
-    MAX_RETRY = 5
     retry_count_dict = {}
     sql_result_dict = {}
 
@@ -140,10 +145,10 @@ def main(args):
         generated_sql = post_process_sql(response)
         retry_count = 0
 
-        while retry_count < MAX_RETRY:
+        while retry_count < max_retry:
             sql_result = evaluator.execute(db_id=DB_ID, sql=generated_sql, is_gold_sql=False)
 
-            if classification_score_dict[id] <= 30:
+            if classification_score_dict[id] <= threshold_for_classification:
                 result_dict[id] = "null"
                 break
             elif len(sql_result) > 3 and "Error" not in sql_result:
@@ -179,7 +184,7 @@ def main(args):
         retry_count_dict[id] = retry_count
         sql_result_dict[id] = sql_result
         # Abstain for the query that retry 5 times but still not answerable and answerable score is less than 30.
-        if retry_count == MAX_RETRY and classification_score_dict[id] <= 30:
+        if retry_count == max_retry and classification_score_dict[id] <= threshold_for_classification:
             print(
                 f"Abstain for ID {id} because the answerable score is less than 30 and retry 5 times but still not answerable."
             )
@@ -218,6 +223,7 @@ def main(args):
                 "retry_count": retry_count_dict[id],
                 "classification_result": classification_result_dict[id],
                 "classification_score": classification_score_dict[id],
+                "classification_score_list": classification_score_dict_list[id],
                 "sql_result": sql_result_dict[id]["pred_answer"],
                 "gt_sql_result": sql_result_dict[id]["gold_answer"],
                 "is_correct": sql_result_dict[id]["is_correct"],
@@ -237,8 +243,11 @@ if __name__ == '__main__':
     parser.add_argument('--data_dir', type=str, default='original', help='Data directory to use')
     parser.add_argument('--data_split', type=str, default='valid', help='Data split to use (valid/test)')
     parser.add_argument('--data_num', type=int, default=100, help='Number of data to use')
-    parser.add_argument('--model_name', type=str, default='gpt-4o', help='Model name to use')
+    parser.add_argument('--model_name', type=str, default='gpt-4o-mini', help='Model name to use')
     parser.add_argument('--temperature', type=float, default=0.6, help='Temperature for model sampling')
+    parser.add_argument('--threshold_for_classification', type=int, default=30, help='threshold_for_classification for answerable classification')
+    parser.add_argument('--max_retry', type=int, default=5, help='Max retry count for SQL generation')
+    parser.add_argument('--num_consistency_check', type=int, default=3, help='Number of consistency check')
     parser.add_argument('--seed', type=int, default=1234, help='Random seed')
     args = parser.parse_args()
     main(args)
