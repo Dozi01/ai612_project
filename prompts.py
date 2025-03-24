@@ -63,6 +63,17 @@ sql_generation_system_prompt = """You are an AI assistant tasked with generating
 
 sql_generation_user_prompt = """Your task is to generate a SQL query to answer the following user question:
 
+### Examples:
+NLQ-1: "What is patient 10021487's monthly average bilirubin, direct levels since 05/2100?"
+SQL-1: "SELECT AVG(labevents.valuenum) FROM labevents WHERE labevents.hadm_id IN ( SELECT admissions.hadm_id FROM admissions WHERE admissions.subject_id = 10021487 ) AND labevents.itemid IN ( SELECT d_labitems.itemid FROM d_labitems WHERE d_labitems.label = 'bilirubin, direct' ) AND strftime('%Y-%m',labevents.charttime) >= '2100-05' GROUP BY strftime('%Y-%m',labevents.charttime)"
+
+NLQ-2: "How many days have passed since patient 10018081 first received a lab test during this hospital visit for po2?"
+SQL-2: "SELECT 1 * ( strftime('%J',current_time) - strftime('%J', labevents.charttime) ) FROM labevents WHERE labevents.itemid IN ( SELECT d_labitems.itemid FROM d_labitems WHERE d_labitems.label = 'po2' ) AND labevents.hadm_id IN ( SELECT admissions.hadm_id FROM admissions WHERE admissions.subject_id = 10018081 AND admissions.dischtime IS NULL ) ORDER BY labevents.charttime ASC LIMIT 1"
+
+NLQ-3: "Did patient 10009035 go through any type of procedure during their first hospital visit?"
+SQL-3: "SELECT COUNT(*)>0 FROM procedures_icd WHERE procedures_icd.hadm_id IN ( SELECT admissions.hadm_id FROM admissions WHERE admissions.subject_id = 10009035 AND admissions.dischtime IS NOT NULL ORDER BY admissions.admittime ASC LIMIT 1 )"
+
+
 NLQ: {USER_QUESTION} 
 SQL:
 """ 
@@ -80,7 +91,7 @@ sql_repair_system_prompt = """You are an AI assistant tasked with repairing a SQ
 
 sql_repair_user_prompt = """Your task is to repair the following SQL query that was generated to answer the following user question:
 
-NLQ: {USER_QUESTION} 
+NLQ: {USER_QUESTION}
 
 ### Here is the original SQL query:
 {SQL_QUERY}

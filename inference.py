@@ -12,6 +12,7 @@ from scoring.utils import SQLEvaluator
 from scoring.scorer import Scorer
 
 import datetime
+from rich import print
 
 
 def main(args):
@@ -171,7 +172,7 @@ def main(args):
                     "content": prompts.sql_repair_user_prompt.format(
                         USER_QUESTION=next(sample["question"] for sample in data if sample["id"] == id),
                         SQL_QUERY=generated_sql,
-                        ERROR_MESSAGE=sql_result,
+                        ERROR_MESSAGE=sql_result if sql_result != "" else "Correct syntax, but no matching result.",
                     ),
                 },
             ]
