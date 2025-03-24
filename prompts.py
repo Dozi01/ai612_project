@@ -10,8 +10,15 @@ answerable_classification_system_prompt = """You are an AI assistant tasked with
 
 answerable_classification_user_prompt = """Your task is to classify the following user question as answerable or unanswerable based on the SQL tables and the assumptions:
 
-### User question:
-{USER_QUESTION}
+### [Unanswerable questions]
+- Vague questions
+- Questions that have nothing to do with medical data
+- Questions that have no relation to the tables
+- Questions that are not answerable with the given data
+- Questions that are plausible but with no related table.
+
+### [Answerable questions]
+- Questions that are answerable with the given tables
 
 ### Here are some examples of answerable questions:
 "What was the prescription drug that patient 10004235 was prescribed for within the same hospital visit after receiving laparoscopic robotic assisted procedure since 03/2100?"
@@ -39,6 +46,9 @@ Present your response in the following format:
 </score>
 
 Remember to provide thorough reasoning before giving the final score.
+
+### User question:
+{USER_QUESTION}
 """
 
 

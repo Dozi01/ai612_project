@@ -16,6 +16,8 @@ import datetime
 
 def main(args):
 
+    random.seed(args.seed)
+
     # Directory paths for database, results and scoring program
     DB_ID           = "mimic_iv"
     BASE_DATA_DIR   = "data"
@@ -51,12 +53,12 @@ def main(args):
     # If augmented data, select unanswerable data as well
     if data_dir == "augmented":
         # select null data 1/3 of desired data num
-        null_lables = [k for k, v in labels.items() if v.lower() == "null"]
-        null_labels = random.sample(null_lables, data_num // 3)
-        null_data = [d for d in data if d["id"] in null_labels]
-        del null_labels
+        null_lables     = [k for k, v in labels.items() if v.lower() == "null"]
+        null_data       = [d for d in data if d["id"] in random.sample(null_lables, data_num // 4)]
+        non_null_data   = [d for d in data if d["id"] not in null_lables]
+        del null_lables
 
-        data = random.sample(data, data_num - len(null_data))
+        data = random.sample(non_null_data, data_num - len(null_data))
         data.extend(null_data)
         print(f"Selected {len(data)} data from augmented data, with null data of {len(null_data)}")
 
@@ -141,7 +143,10 @@ def main(args):
         while retry_count < MAX_RETRY:
             sql_result = evaluator.execute(db_id=DB_ID, sql=generated_sql, is_gold_sql=False)
 
-            if len(sql_result) > 3 and "Error" not in sql_result:
+            if classification_score_dict[id] <= 30:
+                result_dict[id] = "null"
+                break
+            elif len(sql_result) > 3 and "Error" not in sql_result:
                 result_dict[id] = generated_sql
                 break
 
@@ -178,7 +183,7 @@ def main(args):
             print(
                 f"Abstain for ID {id} because the answerable score is less than 30 and retry 5 times but still not answerable."
             )
-            result_dict[id] = "Null" #TODO Check this null is correctly abstain the query.
+            result_dict[id] = "null" #TODO Check this null is correctly abstain the query.
 
 
     ############### SAVE AND EVALUATION ###############
@@ -231,8 +236,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_dir', type=str, default='original', help='Data directory to use')
     parser.add_argument('--data_split', type=str, default='valid', help='Data split to use (valid/test)')
+    parser.add_argument('--data_num', type=int, default=100, help='Number of data to use')
     parser.add_argument('--model_name', type=str, default='gpt-4o', help='Model name to use')
     parser.add_argument('--temperature', type=float, default=0.6, help='Temperature for model sampling')
-    parser.add_argument('--data_num', type=int, default=100, help='Number of data to use')
+    parser.add_argument('--seed', type=int, default=1234, help='Random seed')
     args = parser.parse_args()
     main(args)
