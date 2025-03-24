@@ -36,7 +36,7 @@ def main(args):
         BASE_DATA_DIR, data_dir, f"{data_split}_label.json"
     )  # JSON file for validation labels (for evaluation)
 
-    DB_PATH = os.path.join("database", DB_ID, f"{DB_ID}.sqlite")  # Database path
+    # DB_PATH = os.path.join("database", DB_ID, f"{DB_ID}.sqlite")  # Database path
 
     # Load data
     with open(DATA_PATH, "r") as f:
@@ -190,7 +190,7 @@ def main(args):
     with open(LABEL_PATH, "r") as f:
         gold_labels = json.load(f)
 
-    scorer = Scorer(data=dataset, predictions=result_dict, gold_labels=gold_labels, score_dir="results")
+    scorer = Scorer(data=data, predictions=result_dict, gold_labels=labels, score_dir="results")
 
     score = scorer.get_scores()
 
@@ -233,5 +233,6 @@ if __name__ == '__main__':
     parser.add_argument('--data_split', type=str, default='valid', help='Data split to use (valid/test)')
     parser.add_argument('--model_name', type=str, default='gpt-4o', help='Model name to use')
     parser.add_argument('--temperature', type=float, default=0.6, help='Temperature for model sampling')
+    parser.add_argument('--data_num', type=int, default=100, help='Number of data to use')
     args = parser.parse_args()
     main(args)
