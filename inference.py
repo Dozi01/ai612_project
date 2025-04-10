@@ -31,7 +31,10 @@ def main(args):
     model_name  = args.model_name
     temperature = args.temperature
     max_retry   = args.max_retry
+
     threshold_for_classification = args.threshold_for_classification
+    is_hard_classification       = args.is_hard_classification
+
     num_consistency_check        = args.num_consistency_check
 
     # File paths for the dataset and labels
@@ -86,38 +89,76 @@ def main(args):
     )
     evaluator = SQLEvaluator(data_dir="database", dataset=DB_ID)
 
-    # Answerable Classification
-    classification_result_dict = []
-    batch_prompts = [
-        [
-            {
-                "role": "system",
-                "content": prompts.answerable_classification_system_prompt.format(
-                    SQL_TABLES=table_columns, SQL_ASSUMPTIONS=sql_assumptions
-                ),
-            },
-            {
-                "role": "user",
-                "content": prompts.answerable_classification_user_prompt.format(
-                    USER_QUESTION=sample["question"]
-                ),
-            },
+    #################### Answerable Classification ####################
+    def perform_answerable_classification(data, model, table_columns, sql_assumptions, num_consistency_check, is_hard_classification=False):
+        # Create batch prompts for classification
+        if is_hard_classification:
+            classification_user_prompt_template = prompts.answerable_classification_user_prompt_hard
+        else:
+            classification_user_prompt_template = prompts.answerable_classification_user_prompt
+
+        batch_prompts = [
+            [
+                {
+                    "role": "system",
+                    "content": prompts.answerable_classification_system_prompt.format(
+                        SQL_TABLES=table_columns, SQL_ASSUMPTIONS=sql_assumptions
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": classification_user_prompt_template.format(
+                        USER_QUESTION=sample["question"]
+                    ),
+                },
+            ]
+            for sample in data
         ]
-        for sample in data
-    ]
 
-    classification_result_dict = {sample["id"]: [] for sample in data}  # Initialize list for each sample ID
-    classification_score_dict_list = {sample["id"]: [] for sample in data}  # Initialize list for each sample ID
+        # Initialize dictionaries for storing results
+        classification_result_dict = {sample["id"]: [] for sample in data}
+        classification_score_dict_list = {sample["id"]: [] for sample in data}
 
-    for _ in range(num_consistency_check):
-        responses = model.batch_forward_chatcompletion(batch_prompts)
+        # Perform consistency checks
+        for _ in range(num_consistency_check):
+            responses = model.batch_forward_chatcompletion(batch_prompts)
 
-        for sample, response in zip(data, responses):
-            classification_result_dict[sample["id"]].append(response)
-            classification_score_dict_list[sample["id"]].append(post_process_score(response))
+            for sample, response in zip(data, responses):
+                classification_result_dict[sample["id"]].append(response)
+                if is_hard_classification:
+                    classification_score_dict_list[sample["id"]].append(post_process_score(response, "classification"))
+                else:
+                    classification_score_dict_list[sample["id"]].append(post_process_score(response, "score"))
 
-    classification_score_dict = {id: sum(scores) / len(scores) for id, scores in classification_score_dict_list.items()}
+        if is_hard_classification:
+            # Count answerable/unanswerable classifications
+            classification_counts = {
+                id: {
+                    'answerable': sum(1 for score in scores if score == 'answerable'),
+                    'unanswerable': sum(1 for score in scores if score == 'unanswerable')
+                }
+                for id, scores in classification_score_dict_list.items()
+            }
+            # Use majority vote for final classification
+            classification_score_dict = {
+                id: 0 if counts['unanswerable'] > counts['answerable'] else 1
+                for id, counts in classification_counts.items()
+            }
+        else:
+            # Calculate average scores for soft classification and set to 0 if below threshold
+            classification_score_dict = {
+                id: 0 if sum(scores) / len(scores) <= threshold_for_classification else 1
+                for id, scores in classification_score_dict_list.items()
+            }
 
+        return classification_result_dict, classification_score_dict, classification_score_dict_list
+
+    # Call the function
+    classification_result_dict, classification_score_dict, classification_score_dict_list = perform_answerable_classification(
+        data, model, table_columns, sql_assumptions, num_consistency_check, is_hard_classification=True
+    )
+
+    #################### SQL Generation ####################
     sql_prompts = [
         [
             {
@@ -136,7 +177,6 @@ def main(args):
 
     sql_responses = model.batch_forward_chatcompletion(sql_prompts)
 
-    # SQL 결과 저장
     result_dict = {sample["id"]: response for sample, response in zip(data, sql_responses)}
 
     retry_count_dict = {}
@@ -149,10 +189,10 @@ def main(args):
         while retry_count < max_retry:
             sql_result = evaluator.execute(db_id=DB_ID, sql=generated_sql, is_gold_sql=False)
 
-            if classification_score_dict[id] <= threshold_for_classification:
+            if classification_score_dict[id] == 0: # If the answerable score is 0, abstain the query.
                 result_dict[id] = "null"
                 break
-            elif len(sql_result) > 3 and "Error" not in sql_result:
+            elif len(sql_result) > 3 and "Error" not in sql_result: # If the SQL result is not empty and does not contain "Error", accept the query.
                 result_dict[id] = generated_sql
                 break
 
@@ -184,10 +224,10 @@ def main(args):
 
         retry_count_dict[id] = retry_count
         sql_result_dict[id] = sql_result
-        # Abstain for the query that retry 5 times but still not answerable and answerable score is less than 30.
-        if retry_count == max_retry and classification_score_dict[id] <= threshold_for_classification:
+        # Abstain for the query that retry 5 times but still not answerable.
+        if retry_count == max_retry:
             print(
-                f"Abstain for ID {id} because the answerable score is less than 30 and retry 5 times but still not answerable."
+                f"Abstain for ID {id} because retry 5 times but still not answerable."
             )
             result_dict[id] = "null" #TODO Check this null is correctly abstain the query.
 
@@ -253,6 +293,7 @@ if __name__ == '__main__':
     parser.add_argument("--temperature", type=float, default=0.6, help="Temperature for model sampling")
 
     parser.add_argument('--threshold_for_classification', type=int, default=30, help='threshold_for_classification for answerable classification')
+    parser.add_argument('--is_hard_classification', type=bool, default=True, help='Whether to use hard classification')
     parser.add_argument('--max_retry', type=int, default=5, help='Max retry count for SQL generation')
     parser.add_argument('--num_consistency_check', type=int, default=3, help='Number of consistency check')
 

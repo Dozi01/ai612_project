@@ -98,10 +98,10 @@ def post_process_sql(response):
     except ValueError:
         return None
 
-def post_process_score(response):
+def post_process_score(response, tag):
     response = response.lower()
     try:
-        score = response.split('<score>')[-1].split('</score>')[0]
+        score = response.split(f'<{tag}>')[-1].split(f'</{tag}>')[0]
         return int(score.replace('\n','').strip())
     except ValueError:
         return None
