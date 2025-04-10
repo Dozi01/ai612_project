@@ -1,7 +1,7 @@
 DATA_DIR='augmented'
 DATA_SPLIT='test'
 
-DATA_NUM=10
+DATA_NUM=1000
 DATA_NULL_RATIO=0.45 # 45% of the data is null
 
 MODEL_NAME="gpt-4o-mini"
@@ -10,7 +10,7 @@ TEMPERATURE=0.6
 THRESHOLD_FOR_CLASSIFICATION=30
 IS_HARD_CLASSIFICATION=False # True: hard classification(answerable/unanswerable), False: soft classification(score)
 
-MAX_RETRY=1
+MAX_RETRY=2
 NUM_CONSISTENCY_CHECK=3
 SEED=1004
 

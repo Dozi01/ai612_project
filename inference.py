@@ -6,7 +6,7 @@ from utils import load_schema, create_schema_prompt, post_process_sql, post_proc
 from utils import write_json as write_label
 
 from llm_openai import OpenAIModel
-import prompts_ver3 as prompts
+import prompts as prompts
 from retriever import Retriever
 
 from scoring.utils import SQLEvaluator
@@ -14,6 +14,7 @@ from scoring.scorer import Scorer
 
 import datetime
 from tqdm import tqdm
+from rich import print
 
 def main(
     data_dir, 
@@ -47,6 +48,8 @@ def main(
     
     TRAIN_DATA_PATH = "./data/augmented/train_data.json"
     TRAIN_LABEL_PATH = "./data/augmented/train_label.json"
+    VALID_DATA_PATH = 'data/augmented/valid_data.json'
+    VALID_LABEL_PATH = 'data/augmented/valid_label.json'
 
 
     DB_PATH = os.path.join("database", DB_ID, f"{DB_ID}.sqlite")  # Database path
@@ -67,8 +70,13 @@ def main(
     )
     evaluator = SQLEvaluator(data_dir="database", dataset=DB_ID)
 
-    retriever = Retriever(TRAIN_DATA_PATH, TRAIN_LABEL_PATH, top_k=retriever_top_k) 
-
+    retriever = Retriever(
+        TRAIN_DATA_PATH,
+        TRAIN_LABEL_PATH,
+        VALID_DATA_PATH,
+        VALID_LABEL_PATH,
+        top_k=retriever_top_k,
+    )
     # If augmented data, select unanswerable data as well
     if data_dir == "augmented":
         with open(LABEL_PATH, "r") as f:
@@ -77,7 +85,7 @@ def main(
         # select null data data_null_ratio
         null_lables     = [k for k, v in labels.items() if v.lower() == "null"]
         num_null        = int(data_num * data_null_ratio)
-        null_data       = [d for d in data if d["id"] in random.sample(null_lables, num_null)]
+        null_data       = [d for d in data if d["id"] in random.sample(null_lables, min(num_null, len(null_lables)))]
         non_null_data   = [d for d in data if d["id"] not in null_lables]
         del null_lables
 
@@ -126,6 +134,7 @@ def main(
                     },
                 ]
             )
+        
 
         # Initialize dictionaries for storing results
         classification_result_dict = {sample["id"]: [] for sample in data}
@@ -171,21 +180,28 @@ def main(
     )
 
     #################### SQL Generation ####################
-    sql_prompts = [
-        [
-            {
-                "role": "system",
-                "content": prompts.sql_generation_system_prompt.format(
-                    SQL_TABLES=table_columns, SQL_ASSUMPTIONS=sql_assumptions
-                ),
-            },
-            {
-                "role": "user",
-                "content": prompts.sql_generation_user_prompt.format(USER_QUESTION=sample["question"]),
-            },
-        ]
-        for sample in data
-    ]
+
+    sql_prompts = []
+    for sample in data:
+        rag_examples = retriever.retrieve(sample["question"])
+        rag_examples_text = "\n".join([f"Question: {example['question']}\nSQL: {example['sql']}" for example in rag_examples])
+        sql_prompts.append(
+            [
+                {
+                    "role": "system",
+                    "content": prompts.sql_generation_system_prompt.format(
+                        SQL_TABLES=table_columns, SQL_ASSUMPTIONS=sql_assumptions
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": prompts.sql_generation_user_prompt.format(
+                        USER_QUESTION=sample["question"],
+                        EXAMPLES=rag_examples_text
+                    ),
+                },
+            ]
+        )
 
     sql_responses = model.batch_forward_chatcompletion(sql_prompts)
 
@@ -236,10 +252,10 @@ def main(
 
         retry_count_dict[id] = retry_count
         sql_result_dict[id] = sql_result
-        # Abstain for the query that retry 5 times but still not answerable.
+        # Abstain for the query that still not answerable.
         if retry_count == max_retry:
             print(
-                f"Abstain for ID {id} because retry 5 times but still not answerable."
+                f"Abstain for ID {id} because retry {max_retry} times but still not answerable."
             )
             result_dict[id] = "null" #TODO Check this null is correctly abstain the query.
 
