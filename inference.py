@@ -7,6 +7,7 @@ from utils import write_json as write_label
 
 from llm_openai import OpenAIModel
 import prompts_ver3 as prompts
+from retriever import Retriever
 
 from scoring.utils import SQLEvaluator
 from scoring.scorer import Scorer
@@ -88,6 +89,9 @@ def main(args):
         model_name=model_name, temperature=temperature, api_key=openai_api_key, async_mode=True
     )
     evaluator = SQLEvaluator(data_dir="database", dataset=DB_ID)
+
+    # TODO: Implement retriever
+    # retriever = Retriever(model, DATA_PATH, LABEL_PATH) 
 
     #################### Answerable Classification ####################
     def perform_answerable_classification(data, model, table_columns, sql_assumptions, num_consistency_check, is_hard_classification=False):
