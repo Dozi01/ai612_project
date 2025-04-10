@@ -13,8 +13,6 @@ answerable_classification_user_prompt = """Your task is to classify the followin
 ### [Unanswerable questions]
 - Vague questions
 - Questions that have nothing to do with medical data
-- Questions that have no relation to the tables
-- Questions that are not answerable with the given data
 - Questions that are plausible but with no related table.
 
 ### [Answerable questions]

@@ -1,20 +1,21 @@
 DATA_DIR='augmented'
 DATA_SPLIT='test'
-DATA_NUM=100
+DATA_NUM=10
+DATA_NULL_RATIO=0.45
 MODEL_NAME="gpt-4o-mini"
 TEMPERATURE=0.6
-SEED=1234
+THRESHOLD_FOR_CLASSIFICATION=30
+MAX_RETRY=5
+NUM_CONSISTENCY_CHECK=3
+SEED=1004
 
 python -m inference --data_dir $DATA_DIR \
     --data_split $DATA_SPLIT \
     --data_num $DATA_NUM \
+    --data_null_ratio $DATA_NULL_RATIO \
     --model_name $MODEL_NAME \
     --temperature $TEMPERATURE \
+    --threshold_for_classification $THRESHOLD_FOR_CLASSIFICATION \
+    --max_retry $MAX_RETRY \
+    --num_consistency_check $NUM_CONSISTENCY_CHECK \
     --seed $SEED
-
-
-# TEMPERATURE=0.2
-# python -m inference --data_dir $DATA_DIR \
-#     --data_split $DATA_SPLIT \
-#     --model_name $MODEL_NAME \
-#     --temperature $TEMPERATURE \
