@@ -22,8 +22,7 @@ class Scorer:
             "risk_ans": [0, 0],
             "risk_notans": [0, 0]
         }
-        data = self.data["data"]
-        for instance in tqdm(data[:40]):
+        for instance in tqdm(self.data):
             instance_id = instance["id"]
             question = instance["question"]
             pred_sql = self.predictions[instance_id]

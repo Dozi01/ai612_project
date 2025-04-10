@@ -6,15 +6,17 @@ from utils import load_schema, create_schema_prompt, post_process_sql, post_proc
 from utils import write_json as write_label
 
 from llm_openai import OpenAIModel
-import prompts
+import prompts_ver3 as prompts
 
 from scoring.utils import SQLEvaluator
 from scoring.scorer import Scorer
 
 import datetime
-
+from tqdm import tqdm
 
 def main(args):
+
+    random.seed(args.seed)
 
     # Directory paths for database, results and scoring program
     DB_ID           = "mimic_iv"
@@ -25,8 +27,12 @@ def main(args):
     data_dir    = args.data_dir
     data_split  = args.data_split
     data_num    = args.data_num
+    data_null_ratio = args.data_null_ratio
     model_name  = args.model_name
     temperature = args.temperature
+    max_retry   = args.max_retry
+    threshold_for_classification = args.threshold_for_classification
+    num_consistency_check        = args.num_consistency_check
 
     # File paths for the dataset and labels
     TABLES_PATH = os.path.join("database", "tables.json")  # JSON containing database schema
@@ -36,27 +42,27 @@ def main(args):
         BASE_DATA_DIR, data_dir, f"{data_split}_label.json"
     )  # JSON file for validation labels (for evaluation)
 
-    # DB_PATH = os.path.join("database", DB_ID, f"{DB_ID}.sqlite")  # Database path
+    DB_PATH = os.path.join("database", DB_ID, f"{DB_ID}.sqlite")  # Database path
 
     # Load data
     with open(DATA_PATH, "r") as f:
         dataset = json.load(f)
 
-    with open(LABEL_PATH, "r") as f:
-        labels = json.load(f)
-
-    # Choose data between valid_data and test_data
     data = dataset["data"]
 
     # If augmented data, select unanswerable data as well
     if data_dir == "augmented":
-        # select null data 1/3 of desired data num
-        null_lables = [k for k, v in labels.items() if v.lower() == "null"]
-        null_labels = random.sample(null_lables, data_num // 3)
-        null_data = [d for d in data if d["id"] in null_labels]
-        del null_labels
+        with open(LABEL_PATH, "r") as f:
+            labels = json.load(f)
 
-        data = random.sample(data, data_num - len(null_data))
+        # select null data data_null_ratio
+        null_lables     = [k for k, v in labels.items() if v.lower() == "null"]
+        num_null        = int(data_num * data_null_ratio)
+        null_data       = [d for d in data if d["id"] in random.sample(null_lables, num_null)]
+        non_null_data   = [d for d in data if d["id"] not in null_lables]
+        del null_lables
+
+        data = random.sample(non_null_data, data_num - len(null_data))
         data.extend(null_data)
         print(f"Selected {len(data)} data from augmented data, with null data of {len(null_data)}")
 
@@ -81,8 +87,6 @@ def main(args):
     evaluator = SQLEvaluator(data_dir="database", dataset=DB_ID)
 
     # Answerable Classification
-    threshold = 30  # Threshold for answerable classification
-
     classification_result_dict = []
     batch_prompts = [
         [
@@ -102,12 +106,17 @@ def main(args):
         for sample in data
     ]
 
-    responses = model.batch_forward_chatcompletion(batch_prompts)
+    classification_result_dict = {sample["id"]: [] for sample in data}  # Initialize list for each sample ID
+    classification_score_dict_list = {sample["id"]: [] for sample in data}  # Initialize list for each sample ID
 
-    classification_result_dict = {sample["id"]: response for sample, response in zip(data, responses)}
-    classification_score_dict = {
-        sample["id"]: post_process_score(response) for sample, response in zip(data, responses)
-    }
+    for _ in range(num_consistency_check):
+        responses = model.batch_forward_chatcompletion(batch_prompts)
+
+        for sample, response in zip(data, responses):
+            classification_result_dict[sample["id"]].append(response)
+            classification_score_dict_list[sample["id"]].append(post_process_score(response))
+
+    classification_score_dict = {id: sum(scores) / len(scores) for id, scores in classification_score_dict_list.items()}
 
     sql_prompts = [
         [
@@ -130,18 +139,20 @@ def main(args):
     # SQL 결과 저장
     result_dict = {sample["id"]: response for sample, response in zip(data, sql_responses)}
 
-    MAX_RETRY = 5
     retry_count_dict = {}
     sql_result_dict = {}
 
-    for id, response in result_dict.items():
+    for id, response in tqdm(result_dict.items()):
         generated_sql = post_process_sql(response)
         retry_count = 0
 
-        while retry_count < MAX_RETRY:
+        while retry_count < max_retry:
             sql_result = evaluator.execute(db_id=DB_ID, sql=generated_sql, is_gold_sql=False)
 
-            if len(sql_result) > 3 and "Error" not in sql_result:
+            if classification_score_dict[id] <= threshold_for_classification:
+                result_dict[id] = "null"
+                break
+            elif len(sql_result) > 3 and "Error" not in sql_result:
                 result_dict[id] = generated_sql
                 break
 
@@ -161,7 +172,7 @@ def main(args):
                     "content": prompts.sql_repair_user_prompt.format(
                         USER_QUESTION=next(sample["question"] for sample in data if sample["id"] == id),
                         SQL_QUERY=generated_sql,
-                        ERROR_MESSAGE=sql_result,
+                        ERROR_MESSAGE=sql_result if sql_result != "" else "Correct syntax, but no matching result.",
                     ),
                 },
             ]
@@ -174,56 +185,60 @@ def main(args):
         retry_count_dict[id] = retry_count
         sql_result_dict[id] = sql_result
         # Abstain for the query that retry 5 times but still not answerable and answerable score is less than 30.
-        if retry_count == MAX_RETRY and classification_score_dict[id] <= 30:
+        if retry_count == max_retry and classification_score_dict[id] <= threshold_for_classification:
             print(
                 f"Abstain for ID {id} because the answerable score is less than 30 and retry 5 times but still not answerable."
             )
-            result_dict[id] = "Null" #TODO Check this null is correctly abstain the query.
+            result_dict[id] = "null" #TODO Check this null is correctly abstain the query.
 
 
-    ############### SAVE AND EVALUATION ###############
+    ############### SAVE ###############
     os.makedirs(RESULT_DIR, exist_ok=True)
     current_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     SCORING_OUTPUT_DIR = os.path.join(RESULT_DIR, f"result_{current_time}.json")  # The file to submit
     write_label(SCORING_OUTPUT_DIR, result_dict)
 
-    with open(LABEL_PATH, "r") as f:
-        gold_labels = json.load(f)
+    ############### EVALUATION ###############
+    if data_dir == "augmented":
+        score = 'null'
+        with open(LABEL_PATH, "r") as f:
+            gold_labels = json.load(f)
 
-    scorer = Scorer(data=data, predictions=result_dict, gold_labels=labels, score_dir="results")
+        scorer = Scorer(data=data, predictions=result_dict, gold_labels=labels, score_dir="results")
 
-    score = scorer.get_scores()
+        score = scorer.get_scores()
 
-    sql_result_dict = {}
-    for id in result_dict.keys():
-        sql_result = evaluator(db_id=DB_ID, pred_sql=result_dict[id], gold_sql=gold_labels[id])
-        sql_result_dict[id] = sql_result
+        sql_result_dict = {}
+        for id in result_dict.keys():
+            sql_result = evaluator(db_id=DB_ID, pred_sql=result_dict[id], gold_sql=gold_labels[id])
+            sql_result_dict[id] = sql_result
 
-    log_dict = {
-        "score": score,
-        "data_split": data_split,
-        "model": model_name,
-        "temperature": temperature,
-        "logs": [
-            {
-                "id": id,
-                "question": next(sample["question"] for sample in data if sample["id"] == id),
-                "generated_sql": result_dict[id],
-                "gt_sql_query": gold_labels[id],
-                "retry_count": retry_count_dict[id],
-                "classification_result": classification_result_dict[id],
-                "classification_score": classification_score_dict[id],
-                "sql_result": sql_result_dict[id]["pred_answer"],
-                "gt_sql_result": sql_result_dict[id]["gold_answer"],
-                "is_correct": sql_result_dict[id]["is_correct"],
-            }
-            for id in result_dict.keys()
-        ],
-    }
+        log_dict = {
+            "score": score,
+            "data_split": data_split,
+            "model": model_name,
+            "temperature": temperature,
+            "logs": [
+                {
+                    "id": id,
+                    "question": next(sample["question"] for sample in data if sample["id"] == id),
+                    "generated_sql": result_dict[id],
+                    "gt_sql_query": gold_labels[id],
+                    "retry_count": retry_count_dict[id],
+                    "classification_result": classification_result_dict[id],
+                    "classification_score": classification_score_dict[id],
+                    "classification_score_list": classification_score_dict_list[id],
+                    "sql_result": sql_result_dict[id]["pred_answer"],
+                    "gt_sql_result": sql_result_dict[id]["gold_answer"],
+                    "is_correct": sql_result_dict[id]["is_correct"],
+                }
+                for id in result_dict.keys()
+            ],
+        }
 
-    os.makedirs(RESULT_DIR, exist_ok=True)
-    SCORING_OUTPUT_DIR = os.path.join(RESULT_DIR, f"logs_{current_time}.json")  # The file to submit
-    write_label(SCORING_OUTPUT_DIR, log_dict)
+        os.makedirs(RESULT_DIR, exist_ok=True)
+        SCORING_OUTPUT_DIR = os.path.join(RESULT_DIR, f"logs_{current_time}.json")  # The file to submit
+        write_label(SCORING_OUTPUT_DIR, log_dict)
 
 
 if __name__ == '__main__':
@@ -231,8 +246,17 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_dir', type=str, default='original', help='Data directory to use')
     parser.add_argument('--data_split', type=str, default='valid', help='Data split to use (valid/test)')
-    parser.add_argument('--model_name', type=str, default='gpt-4o', help='Model name to use')
-    parser.add_argument('--temperature', type=float, default=0.6, help='Temperature for model sampling')
-    parser.add_argument('--data_num', type=int, default=100, help='Number of data to use')
+    parser.add_argument("--data_num", type=int, default=100, help="Number of data to use")
+    parser.add_argument("--data_null_ratio", type=float, default=0.45, help="Ratio of null data to use")
+
+    parser.add_argument("--model_name", type=str, default="gpt-4o-mini", help="Model name to use")
+    parser.add_argument("--temperature", type=float, default=0.6, help="Temperature for model sampling")
+
+    parser.add_argument('--threshold_for_classification', type=int, default=30, help='threshold_for_classification for answerable classification')
+    parser.add_argument('--max_retry', type=int, default=5, help='Max retry count for SQL generation')
+    parser.add_argument('--num_consistency_check', type=int, default=3, help='Number of consistency check')
+
+    parser.add_argument('--seed', type=int, default=1234, help='Random seed')
+    
     args = parser.parse_args()
     main(args)
