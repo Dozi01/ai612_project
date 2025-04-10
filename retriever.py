@@ -7,10 +7,12 @@ from rich import print
 
 
 class Retriever:
-    def __init__(self, data_path, label_path, model_name='emilyalsentzer/Bio_ClinicalBERT', top_k=10, hybrid_weight=0.5):
+    def __init__(self, train_data_path, train_label_path, valid_data_path, valid_label_path, model_name='emilyalsentzer/Bio_ClinicalBERT', top_k=10, hybrid_weight=0.5):
         """Initialize the Retriever with data paths and model."""
-        self.data_path = data_path
-        self.label_path = label_path
+        self.train_data_path = train_data_path
+        self.train_label_path = train_label_path
+        self.valid_data_path = valid_data_path
+        self.valid_label_path = valid_label_path
         self.model_name = model_name
         self.top_k = top_k
         self.hybrid_weight = hybrid_weight
@@ -22,18 +24,24 @@ class Retriever:
         # Load data
         self._load_data()
 
-        # Build indexes
-        self._build_index()
-        self._build_bm25()
+        # Build or load indexes
+        self._build_or_load_index()
+        self._build_or_load_bm25()
 
     def _load_data(self):
         """Load and prepare the training data and labels."""
         print("Loading data...")
-        with open(self.data_path, 'r', encoding='utf-8') as f:
+        with open(self.train_data_path, 'r', encoding='utf-8') as f:
             self.train_data = json.load(f)['data']  # Question data
 
-        with open(self.label_path, 'r', encoding='utf-8') as f:
-            self.label_data = json.load(f)  # label id -> SQL query
+        with open(self.train_label_path, 'r', encoding='utf-8') as f:
+            self.train_label_data = json.load(f)  # label id -> SQL query
+
+        with open(self.valid_data_path, 'r', encoding='utf-8') as f:
+            self.valid_data = json.load(f)['data']  # Question data
+
+        with open(self.valid_label_path, 'r', encoding='utf-8') as f:
+            self.valid_label_data = json.load(f)  # label id -> SQL query
 
         # Prepare question data
         self.questions = [item['question'] for item in self.train_data]
@@ -42,31 +50,56 @@ class Retriever:
         # Prepare corpus for BM25
         self.corpus = [q.lower() for q in self.questions]
 
-    def _build_index(self):
-        """Build the FAISS index for similarity search."""
-        print("Embedding questions...")
-        query_embeddings = self.model.encode(
-            self.questions,
-            convert_to_numpy=True,
-            show_progress_bar=True
-        )
+    def _build_or_load_index(self):
+        """Build or load the FAISS index for similarity search."""
+        import os
 
-        # L2 normalize for cosine similarity
-        faiss.normalize_L2(query_embeddings)
+        if os.path.exists("faiss_index.bin"):
+            print("Loading existing FAISS index...")
+            self.index = faiss.read_index("faiss_index.bin")
+            print(f"Loaded index with {self.index.ntotal} vectors")
+        else:
+            print("Building new FAISS index...")
+            print("Embedding questions...")
+            query_embeddings = self.model.encode(
+                self.questions,
+                convert_to_numpy=True,
+                show_progress_bar=True
+            )
 
-        print("Building FAISS index...")
-        self.index = faiss.IndexFlatIP(query_embeddings.shape[1])
-        self.index.add(query_embeddings)
+            # L2 normalize for cosine similarity
+            faiss.normalize_L2(query_embeddings)
 
-        print(f"Number of vectors in the index: {self.index.ntotal}")
+            print("Building FAISS index...")
+            self.index = faiss.IndexFlatIP(query_embeddings.shape[1])
+            self.index.add(query_embeddings)
 
-    def _build_bm25(self):
-        """Build BM25 index."""
+            print(f"Number of vectors in the index: {self.index.ntotal}")
+            
+            # Save FAISS index
+            print("Saving FAISS index...")
+            faiss.write_index(self.index, "faiss_index.bin")
+
+    def _build_or_load_bm25(self):
+        """Build or load BM25 index."""
         from rank_bm25 import BM25Okapi
+        import pickle
+        import os
 
-        # Tokenize corpus
-        tokenized_corpus = [doc.split() for doc in self.corpus]
-        self.bm25 = BM25Okapi(tokenized_corpus)
+        if os.path.exists("bm25_index.pkl"):
+            print("Loading existing BM25 index...")
+            with open("bm25_index.pkl", "rb") as f:
+                self.bm25 = pickle.load(f)
+        else:
+            print("Building new BM25 index...")
+            # Tokenize corpus
+            tokenized_corpus = [doc.split() for doc in self.corpus]
+            self.bm25 = BM25Okapi(tokenized_corpus)
+
+            # Save BM25 index
+            print("Saving BM25 index...")
+            with open("bm25_index.pkl", "wb") as f:
+                pickle.dump(self.bm25, f)
 
     def retrieve(self, query):
         """Retrieve top-k similar questions using hybrid search."""
@@ -85,7 +118,7 @@ class Retriever:
             faiss_results.append({
                 'label_id': label_id,
                 'score': float(score),
-                'sql': self.label_data[label_id],
+                'sql': self.train_label_data[label_id],
                 'question': self.questions[idx]
             })
 
@@ -101,7 +134,7 @@ class Retriever:
             bm25_results.append({
                 'label_id': label_id,
                 'score': float(sparse_scores[idx]),
-                'sql': self.label_data[label_id],
+                'sql': self.train_label_data[label_id],
                 'question': self.questions[idx]
             })
 
@@ -126,7 +159,7 @@ class Retriever:
             hybrid_results.append({
                 'label_id': label_id,
                 'score': float(final_scores[idx]),
-                'sql': self.label_data[label_id],
+                'sql': self.train_label_data[label_id],
                 'question': self.questions[idx]
             })
 
@@ -141,7 +174,12 @@ if __name__ == "__main__":
     VALID_LABEL_PATH = 'data/augmented/valid_label.json'
 
     # Initialize retriever
-    retriever = Retriever(TRAIN_DATA_PATH, TRAIN_LABEL_PATH)
+    retriever = Retriever(
+        TRAIN_DATA_PATH,
+        TRAIN_LABEL_PATH,
+        VALID_DATA_PATH,
+        VALID_LABEL_PATH
+    )
 
     # Test query
     test_query = "What are the precautions after the spinal canal explor nec procedure?"
