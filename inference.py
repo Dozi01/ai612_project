@@ -15,28 +15,27 @@ from scoring.scorer import Scorer
 import datetime
 from tqdm import tqdm
 
-def main(args):
-
-    random.seed(args.seed)
+def main(
+    data_dir, 
+    data_split, 
+    data_num, 
+    data_null_ratio,
+    model_name,
+    temperature,
+    max_retry,
+    threshold_for_classification,
+    is_hard_classification,
+    retriever_top_k,
+    num_consistency_check,
+    seed
+    ):
+    random.seed(seed)
 
     # Directory paths for database, results and scoring program
     DB_ID           = "mimic_iv"
     BASE_DATA_DIR   = "data"
     RESULT_DIR      = "results"
     SCORING_DIR     = "scoring"
-
-    data_dir    = args.data_dir
-    data_split  = args.data_split
-    data_num    = args.data_num
-    data_null_ratio = args.data_null_ratio
-    model_name  = args.model_name
-    temperature = args.temperature
-    max_retry   = args.max_retry
-
-    threshold_for_classification = args.threshold_for_classification
-    is_hard_classification       = args.is_hard_classification
-
-    num_consistency_check        = args.num_consistency_check
 
     # File paths for the dataset and labels
     TABLES_PATH = os.path.join("database", "tables.json")  # JSON containing database schema
@@ -45,6 +44,10 @@ def main(args):
     LABEL_PATH = os.path.join(
         BASE_DATA_DIR, data_dir, f"{data_split}_label.json"
     )  # JSON file for validation labels (for evaluation)
+    
+    TRAIN_DATA_PATH = "./data/augmented/train_data.json"
+    TRAIN_LABEL_PATH = "./data/augmented/train_label.json"
+
 
     DB_PATH = os.path.join("database", DB_ID, f"{DB_ID}.sqlite")  # Database path
 
@@ -53,6 +56,18 @@ def main(args):
         dataset = json.load(f)
 
     data = dataset["data"]
+
+    # Load api key from json file
+    with open("sample_submission_chatgpt_api_key.json", "r") as f:
+        openai_api_key = json.load(f)["key"]
+    # new_api_key = os.getenv("OPENAI_API_KEY")
+
+    model = OpenAIModel(
+        model_name=model_name, temperature=temperature, api_key=openai_api_key, async_mode=True
+    )
+    evaluator = SQLEvaluator(data_dir="database", dataset=DB_ID)
+
+    retriever = Retriever(TRAIN_DATA_PATH, TRAIN_LABEL_PATH, top_k=retriever_top_k) 
 
     # If augmented data, select unanswerable data as well
     if data_dir == "augmented":
@@ -80,44 +95,37 @@ def main(args):
     )
     table_prompt = table_columns + sql_assumptions
 
-    # Load api key from json file
-    with open("sample_submission_chatgpt_api_key.json", "r") as f:
-        openai_api_key = json.load(f)["key"]
-    # new_api_key = os.getenv("OPENAI_API_KEY")
-
-    model = OpenAIModel(
-        model_name=model_name, temperature=temperature, api_key=openai_api_key, async_mode=True
-    )
-    evaluator = SQLEvaluator(data_dir="database", dataset=DB_ID)
-
-    # TODO: Implement retriever
-    # retriever = Retriever(model, DATA_PATH, LABEL_PATH) 
 
     #################### Answerable Classification ####################
-    def perform_answerable_classification(data, model, table_columns, sql_assumptions, num_consistency_check, is_hard_classification=False):
+    def perform_answerable_classification(data, model, retriever, table_columns, sql_assumptions, num_consistency_check, is_hard_classification=False):
         # Create batch prompts for classification
         if is_hard_classification:
             classification_user_prompt_template = prompts.answerable_classification_user_prompt_hard
         else:
+            raise ValueError("Soft classification is not supported yet")
             classification_user_prompt_template = prompts.answerable_classification_user_prompt
 
-        batch_prompts = [
-            [
-                {
-                    "role": "system",
-                    "content": prompts.answerable_classification_system_prompt.format(
-                        SQL_TABLES=table_columns, SQL_ASSUMPTIONS=sql_assumptions
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": classification_user_prompt_template.format(
-                        USER_QUESTION=sample["question"]
-                    ),
-                },
-            ]
-            for sample in data
-        ]
+        batch_prompts = []
+        for sample in data:
+            rag_examples = retriever.retrieve(sample["question"])
+            rag_examples_text = "\n".join([f"Question: {example['question']}\nSQL: {example['sql']}" for example in rag_examples])
+            batch_prompts.append(
+                    [
+                        {
+                        "role": "system",
+                        "content": prompts.answerable_classification_system_prompt.format(
+                            SQL_TABLES=table_columns, SQL_ASSUMPTIONS=sql_assumptions
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": classification_user_prompt_template.format(
+                            USER_QUESTION=sample["question"],
+                            EXAMPLES=rag_examples_text
+                        ),
+                    },
+                ]
+            )
 
         # Initialize dictionaries for storing results
         classification_result_dict = {sample["id"]: [] for sample in data}
@@ -130,16 +138,16 @@ def main(args):
             for sample, response in zip(data, responses):
                 classification_result_dict[sample["id"]].append(response)
                 if is_hard_classification:
-                    classification_score_dict_list[sample["id"]].append(post_process_score(response, "classification"))
+                    classification_score_dict_list[sample["id"]].append(post_process_score(response, is_hard_classification))
                 else:
-                    classification_score_dict_list[sample["id"]].append(post_process_score(response, "score"))
+                    classification_score_dict_list[sample["id"]].append(post_process_score(response, is_hard_classification))
 
         if is_hard_classification:
             # Count answerable/unanswerable classifications
             classification_counts = {
                 id: {
                     'answerable': sum(1 for score in scores if score == 'answerable'),
-                    'unanswerable': sum(1 for score in scores if score == 'unanswerable')
+                    'unanswerable': sum(1 for score in scores if score == 'null')
                 }
                 for id, scores in classification_score_dict_list.items()
             }
@@ -159,7 +167,7 @@ def main(args):
 
     # Call the function
     classification_result_dict, classification_score_dict, classification_score_dict_list = perform_answerable_classification(
-        data, model, table_columns, sql_assumptions, num_consistency_check, is_hard_classification=True
+        data, model, retriever, table_columns, sql_assumptions, num_consistency_check, is_hard_classification=is_hard_classification
     )
 
     #################### SQL Generation ####################
@@ -301,7 +309,9 @@ if __name__ == '__main__':
     parser.add_argument('--max_retry', type=int, default=5, help='Max retry count for SQL generation')
     parser.add_argument('--num_consistency_check', type=int, default=3, help='Number of consistency check')
 
+    parser.add_argument('--retriever_top_k', type=int, default=5, help='Number of top k for retriever')
+
     parser.add_argument('--seed', type=int, default=1234, help='Random seed')
-    
+
     args = parser.parse_args()
-    main(args)
+    main(**vars(args))

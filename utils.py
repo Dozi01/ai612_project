@@ -98,10 +98,22 @@ def post_process_sql(response):
     except ValueError:
         return None
 
-def post_process_score(response, tag):
+def post_process_score(response, is_hard_classification):
     response = response.lower()
-    try:
-        score = response.split(f'<{tag}>')[-1].split(f'</{tag}>')[0]
-        return int(score.replace('\n','').strip())
-    except ValueError:
-        return None
+    if is_hard_classification:
+        tag = 'classification'
+        try:
+            score = response.split(f'<{tag}>')[-1].split(f'</{tag}>')[0]
+            return score.replace('\n','').replace('[','').replace(']','').strip()
+        except ValueError:
+            return None
+
+
+    else:
+        tag = 'score'
+        try:
+            score = response.split(f'<{tag}>')[-1].split(f'</{tag}>')[0]
+            return int(score.replace('\n','').strip())
+        except ValueError:
+            return None
+
