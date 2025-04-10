@@ -7,7 +7,7 @@ from rich import print
 
 
 class Retriever:
-    def __init__(self, train_data_path, train_label_path, valid_data_path, valid_label_path, model_name='emilyalsentzer/Bio_ClinicalBERT', top_k=10, hybrid_weight=0.5):
+    def __init__(self, train_data_path, train_label_path, valid_data_path, valid_label_path, model_name='emilyalsentzer/Bio_ClinicalBERT', top_k=10, hybrid_weight=0.5, use_null=False):
         """Initialize the Retriever with data paths and model."""
         self.train_data_path = train_data_path
         self.train_label_path = train_label_path
@@ -16,6 +16,7 @@ class Retriever:
         self.model_name = model_name
         self.top_k = top_k
         self.hybrid_weight = hybrid_weight
+        self.use_null = use_null
 
         # Load model
         print("Loading Bio-ClinicalBERT model...")
@@ -43,6 +44,12 @@ class Retriever:
         with open(self.valid_label_path, 'r', encoding='utf-8') as f:
             self.valid_label_data = json.load(f)  # label id -> SQL query
 
+        # Filter out data with NULL labels if use_null is False
+        if not self.use_null:
+            self.train_data = [item for item in self.train_data if self.train_label_data[item['id']] != 'null']
+            self.valid_data = [item for item in self.valid_data if self.valid_label_data[item['id']] != 'null']
+            print(f"Filtered {len(self.train_data)} training data and {len(self.valid_data)} validation data")
+
         # Prepare question data
         self.questions = [item['question'] for item in self.train_data]
         self.question_ids = [item['id'] for item in self.train_data]
@@ -54,9 +61,11 @@ class Retriever:
         """Build or load the FAISS index for similarity search."""
         import os
 
-        if os.path.exists("faiss_index.bin"):
-            print("Loading existing FAISS index...")
-            self.index = faiss.read_index("faiss_index.bin")
+        index_filename = "faiss_index_with_null.bin" if self.use_null else "faiss_index_filtered.bin"
+
+        if os.path.exists(index_filename):
+            print(f"Loading existing FAISS index from {index_filename}...")
+            self.index = faiss.read_index(index_filename)
             print(f"Loaded index with {self.index.ntotal} vectors")
         else:
             print("Building new FAISS index...")
@@ -75,10 +84,10 @@ class Retriever:
             self.index.add(query_embeddings)
 
             print(f"Number of vectors in the index: {self.index.ntotal}")
-            
+
             # Save FAISS index
-            print("Saving FAISS index...")
-            faiss.write_index(self.index, "faiss_index.bin")
+            print(f"Saving FAISS index to {index_filename}...")
+            faiss.write_index(self.index, index_filename)
 
     def _build_or_load_bm25(self):
         """Build or load BM25 index."""
@@ -86,9 +95,11 @@ class Retriever:
         import pickle
         import os
 
-        if os.path.exists("bm25_index.pkl"):
-            print("Loading existing BM25 index...")
-            with open("bm25_index.pkl", "rb") as f:
+        bm25_filename = "bm25_index_with_null.pkl" if self.use_null else "bm25_index_filtered.pkl"
+
+        if os.path.exists(bm25_filename):
+            print(f"Loading existing BM25 index from {bm25_filename}...")
+            with open(bm25_filename, "rb") as f:
                 self.bm25 = pickle.load(f)
         else:
             print("Building new BM25 index...")
@@ -97,8 +108,8 @@ class Retriever:
             self.bm25 = BM25Okapi(tokenized_corpus)
 
             # Save BM25 index
-            print("Saving BM25 index...")
-            with open("bm25_index.pkl", "wb") as f:
+            print(f"Saving BM25 index to {bm25_filename}...")
+            with open(bm25_filename, "wb") as f:
                 pickle.dump(self.bm25, f)
 
     def retrieve(self, query):
@@ -173,12 +184,13 @@ if __name__ == "__main__":
     VALID_DATA_PATH = 'data/augmented/valid_data.json'
     VALID_LABEL_PATH = 'data/augmented/valid_label.json'
 
-    # Initialize retriever
+    # Initialize retriever with filtered data (no NULL labels)
     retriever = Retriever(
         TRAIN_DATA_PATH,
         TRAIN_LABEL_PATH,
         VALID_DATA_PATH,
-        VALID_LABEL_PATH
+        VALID_LABEL_PATH,
+        use_null=True
     )
 
     # Test query
