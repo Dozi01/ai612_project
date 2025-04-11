@@ -66,9 +66,13 @@ def main(
         openai_api_key = json.load(f)["key"]
     # new_api_key = os.getenv("OPENAI_API_KEY")
 
-    model = OpenAIModel(
-        model_name=model_name, temperature=temperature, api_key=openai_api_key, async_mode=True
+    model_classification = OpenAIModel(
+        model_name=model_name, temperature=0.8, api_key=openai_api_key, async_mode=True
     )
+    model_sql = OpenAIModel(
+        model_name=model_name, temperature=0.2, api_key=openai_api_key, async_mode=True
+    )
+    
     evaluator = SQLEvaluator(data_dir="database", dataset=DB_ID)
 
     retriever = Retriever(
@@ -106,6 +110,7 @@ def main(
     table_prompt = table_columns + sql_assumptions
 
     #################### Answerable Classification ####################
+    retriever_results_dict = {}
     def perform_answerable_classification(data, model, retriever, table_columns, sql_assumptions, num_consistency_check, is_hard_classification=False):
         # Create batch prompts for classification
         if is_hard_classification:
@@ -118,6 +123,7 @@ def main(
         for sample in data:
             rag_examples = retriever.retrieve(sample["question"])
             rag_examples_text = "\n".join([f"Question: {example['question']}\nSQL: {example['sql']}" for example in rag_examples])
+            retriever_results_dict[sample["id"]] = rag_examples_text
             batch_prompts.append(
                     [
                         {
@@ -177,7 +183,7 @@ def main(
 
     # Call the function
     classification_result_dict, classification_score_dict, classification_score_dict_list = perform_answerable_classification(
-        data, model, retriever, table_columns, sql_assumptions, num_consistency_check, is_hard_classification=is_hard_classification
+        data, model_classification, retriever, table_columns, sql_assumptions, num_consistency_check, is_hard_classification=is_hard_classification
     )
 
     #################### SQL Generation ####################
@@ -204,7 +210,7 @@ def main(
             ]
         )
 
-    sql_responses = model.batch_forward_chatcompletion(sql_prompts)
+    sql_responses = model_sql.batch_forward_chatcompletion(sql_prompts)
 
     result_dict = {sample["id"]: response for sample, response in zip(data, sql_responses)}
 
@@ -218,8 +224,8 @@ def main(
 
         if classification_score_dict[id] == 0:  # If the answerable score is 0, abstain the query.
             result_dict[id] = "null"
-        elif (len(sql_result) > 3 and 
-              "Error" not in sql_result and 
+        elif (len(sql_result) > 3 and
+              "Error" not in sql_result and
               'None' not in sql_result):  # Accept query if result is valid and non-empty
             result_dict[id] = generated_sql
         else:
@@ -251,12 +257,12 @@ def main(
                         },
                     ]
 
-                    new_response = model.generate(retry_prompt)
+                    new_response = model_sql.generate(retry_prompt)
                     generated_sql = post_process_sql(new_response)
                     sql_result = evaluator.execute(db_id=DB_ID, sql=generated_sql, is_gold_sql=False)
 
-                    if (len(sql_result) > 3 and 
-                        "Error" not in sql_result and 
+                    if (len(sql_result) > 3 and
+                        "Error" not in sql_result and
                         'None' not in sql_result):
                         result_dict[id] = generated_sql
                         break
@@ -303,6 +309,7 @@ def main(
                 {
                     "id": id,
                     "question": next(sample["question"] for sample in data if sample["id"] == id),
+                    "retriever_results": retriever_results_dict[id],
                     "generated_sql": result_dict[id],
                     "gt_sql_query": gold_labels[id],
                     "retry_count": retry_count_dict[id],
@@ -342,7 +349,7 @@ if __name__ == '__main__':
     parser.add_argument('--hybrid_weight', type=float, default=0.5, help='Hybrid weight for retriever')
 
     parser.add_argument('--seed', type=int, default=1234, help='Random seed')
-    
+
 
     args = parser.parse_args()
     main(**vars(args))
