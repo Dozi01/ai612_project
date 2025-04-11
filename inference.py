@@ -103,7 +103,6 @@ def main(
     )
     table_prompt = table_columns + sql_assumptions
 
-
     #################### Answerable Classification ####################
     def perform_answerable_classification(data, model, retriever, table_columns, sql_assumptions, num_consistency_check, is_hard_classification=False):
         # Create batch prompts for classification
@@ -213,51 +212,63 @@ def main(
     for id, response in tqdm(result_dict.items()):
         generated_sql = post_process_sql(response)
         retry_count = 0
+        sql_result = evaluator.execute(db_id=DB_ID, sql=generated_sql, is_gold_sql=False)
 
-        while retry_count < max_retry:
-            sql_result = evaluator.execute(db_id=DB_ID, sql=generated_sql, is_gold_sql=False)
-
-            if classification_score_dict[id] == 0: # If the answerable score is 0, abstain the query.
+        if classification_score_dict[id] == 0:  # If the answerable score is 0, abstain the query.
+            result_dict[id] = "null"
+        elif (len(sql_result) > 3 and 
+              "Error" not in sql_result and 
+              'None' not in sql_result):  # Accept query if result is valid and non-empty
+            result_dict[id] = generated_sql
+        else:
+            # If max_retry is 0, directly abstain
+            if max_retry == 0:
                 result_dict[id] = "null"
-                break
-            elif len(sql_result) > 3 and "Error" not in sql_result: # If the SQL result is not empty and does not contain "Error", accept the query.
-                result_dict[id] = generated_sql
-                break
+                print(f"Abstain for ID {id} because max_retry is 0.")
+            else:
+                # Only attempt retries if max_retry > 0
+                while retry_count < max_retry:
+                    print(
+                        f"[Retry {retry_count+1}] SQL Execution Failed for ID : {id}\nSQL_RESULT: {sql_result}\nGENERATED_SQL: {generated_sql}\n\n"
+                    )
 
-            print(
-                f"[Retry {retry_count+1}] SQL Execution Failed for ID : {id}\nSQL_RESULT: {sql_result}\nGENERATED_SQL: {generated_sql}\n\n"
-            )
+                    retry_prompt = [
+                        {
+                            "role": "system",
+                            "content": prompts.sql_repair_system_prompt.format(
+                                SQL_TABLES=table_columns, SQL_ASSUMPTIONS=sql_assumptions
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": prompts.sql_repair_user_prompt.format(
+                                USER_QUESTION=next(sample["question"] for sample in data if sample["id"] == id),
+                                SQL_QUERY=generated_sql,
+                                ERROR_MESSAGE=sql_result if sql_result != "" else "Correct syntax, but no matching result.",
+                            ),
+                        },
+                    ]
 
-            retry_prompt = [
-                {
-                    "role": "system",
-                    "content": prompts.sql_repair_system_prompt.format(
-                        SQL_TABLES=table_columns, SQL_ASSUMPTIONS=sql_assumptions
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": prompts.sql_repair_user_prompt.format(
-                        USER_QUESTION=next(sample["question"] for sample in data if sample["id"] == id),
-                        SQL_QUERY=generated_sql,
-                        ERROR_MESSAGE=sql_result if sql_result != "" else "Correct syntax, but no matching result.",
-                    ),
-                },
-            ]
+                    new_response = model.generate(retry_prompt)
+                    generated_sql = post_process_sql(new_response)
+                    sql_result = evaluator.execute(db_id=DB_ID, sql=generated_sql, is_gold_sql=False)
 
-            new_response = model.generate(retry_prompt)
-            generated_sql = post_process_sql(new_response)
+                    if (len(sql_result) > 3 and 
+                        "Error" not in sql_result and 
+                        'None' not in sql_result):
+                        result_dict[id] = generated_sql
+                        break
 
-            retry_count += 1
+                    retry_count += 1
+
+                if retry_count == max_retry:
+                    print(
+                        f"Abstain for ID {id} because retry {max_retry} times but still not answerable."
+                    )
+                    result_dict[id] = "null"
 
         retry_count_dict[id] = retry_count
         sql_result_dict[id] = sql_result
-        # Abstain for the query that still not answerable.
-        if retry_count == max_retry:
-            print(
-                f"Abstain for ID {id} because retry {max_retry} times but still not answerable."
-            )
-            result_dict[id] = "null" #TODO Check this null is correctly abstain the query.
 
 
     ############### SAVE ###############

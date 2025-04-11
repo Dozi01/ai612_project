@@ -88,7 +88,7 @@ class OpenAIModel:
                 await asyncio.sleep(backoff_time)
                 backoff_time *= 2
 
-    async def async_generation(self, batch_prompts, chunk_size=300):
+    async def async_generation(self, batch_prompts, chunk_size=500):
         responses = []
         for i in range(0, len(batch_prompts), chunk_size):
             batch = batch_prompts[i : i + chunk_size]

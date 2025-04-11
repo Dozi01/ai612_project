@@ -163,8 +163,9 @@ class Retriever:
                 'question': self.questions[idx]
             })
 
-        return faiss_results, bm25_results, hybrid_results
-
+        # return faiss_results, bm25_results, hybrid_results
+        return hybrid_results
+    
 # Example usage
 if __name__ == "__main__":
     # File paths
