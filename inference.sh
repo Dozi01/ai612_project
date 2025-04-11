@@ -10,13 +10,16 @@ TEMPERATURE=0.6
 THRESHOLD_FOR_CLASSIFICATION=30
 IS_HARD_CLASSIFICATION=False # True: hard classification(answerable/unanswerable), False: soft classification(score)
 
-MAX_RETRY=2
+MAX_RETRY=0
 NUM_CONSISTENCY_CHECK=3
 SEED=1004
 
 #### RETRIEVER
-TOP_K=10
+TOP_K=3
 HYBRID_WEIGHT=0.5
+
+USE_VALID_DATA=False
+USE_TEST_DATA=False
 
 python -m inference --data_dir $DATA_DIR \
     --data_split $DATA_SPLIT \
@@ -31,3 +34,5 @@ python -m inference --data_dir $DATA_DIR \
     --seed $SEED \
     --retriever_top_k $TOP_K \
     --hybrid_weight $HYBRID_WEIGHT \
+    --use_valid_data $USE_VALID_DATA \
+    --use_test_data $USE_TEST_DATA \

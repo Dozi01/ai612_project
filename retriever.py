@@ -1,4 +1,5 @@
 import json
+import os
 from sentence_transformers import SentenceTransformer
 import faiss
 import numpy as np
@@ -7,17 +8,23 @@ from rich import print
 
 
 class Retriever:
-    def __init__(self, train_data_path, train_label_path, valid_data_path, valid_label_path, model_name='emilyalsentzer/Bio_ClinicalBERT', top_k=10, hybrid_weight=0.5, use_null=True):
+    def __init__(self, data_path, model_name='emilyalsentzer/Bio_ClinicalBERT', top_k=10, hybrid_weight=0.5, use_null=True, use_valid_data=False, use_test_data=False, build_new_index=True):
         """Initialize the Retriever with data paths and model."""
-        self.train_data_path = train_data_path
-        self.train_label_path = train_label_path
-        self.valid_data_path = valid_data_path
-        self.valid_label_path = valid_label_path
+
+        self.train_data_path = os.path.join(data_path, "train_data.json")
+        self.train_label_path = os.path.join(data_path, "train_label.json")
+        self.valid_data_path = os.path.join(data_path, "valid_data.json")
+        self.valid_label_path = os.path.join(data_path, "valid_label.json")
+        self.test_data_path = os.path.join(data_path, "test_data.json")
+        self.test_label_path = os.path.join(data_path, "test_label.json")
+
         self.model_name = model_name
         self.top_k = top_k
         self.hybrid_weight = hybrid_weight
         self.use_null = use_null
-
+        self.use_valid_data = use_valid_data
+        self.use_test_data = use_test_data
+        self.build_new_index = build_new_index
         # Load model
         print("Loading Bio-ClinicalBERT model...")
         self.model = SentenceTransformer(model_name)
@@ -44,6 +51,12 @@ class Retriever:
         with open(self.valid_label_path, 'r', encoding='utf-8') as f:
             self.valid_label_data = json.load(f)  # label id -> SQL query
 
+        with open(self.test_data_path, 'r', encoding='utf-8') as f:
+            self.test_data = json.load(f)['data']  # Question data
+
+        with open(self.test_label_path, 'r', encoding='utf-8') as f:
+            self.test_label_data = json.load(f)  # label id -> SQL query
+
         # Filter out data with NULL labels if use_null is False
         if not self.use_null:
             self.train_data = [item for item in self.train_data if self.train_label_data[item['id']] != 'null']
@@ -54,63 +67,88 @@ class Retriever:
         self.questions = [item['question'] for item in self.train_data]
         self.question_ids = [item['id'] for item in self.train_data]
 
+        if self.use_valid_data:
+            self.questions.extend([item['question'] for item in self.valid_data])
+            self.question_ids.extend([item['id'] for item in self.valid_data])
+
+        if self.use_test_data:
+            self.questions.extend([item['question'] for item in self.test_data])
+            self.question_ids.extend([item['id'] for item in self.test_data])
         # Prepare corpus for BM25
         self.corpus = [q.lower() for q in self.questions]
 
+        self.total_label_data = {**self.train_label_data, **self.valid_label_data, **self.test_label_data}
+
     def _build_or_load_index(self):
         """Build or load the FAISS index for similarity search."""
-        import os
-
         index_filename = "faiss_index_with_null.bin" if self.use_null else "faiss_index_filtered.bin"
 
-        if os.path.exists(index_filename):
-            print(f"Loading existing FAISS index from {index_filename}...")
-            self.index = faiss.read_index(index_filename)
-            print(f"Loaded index with {self.index.ntotal} vectors")
+        if os.path.exists(index_filename) and not self.build_new_index:
+            self._load_faiss_index(index_filename)
         else:
-            print("Building new FAISS index...")
-            print("Embedding questions...")
-            query_embeddings = self.model.encode(
-                self.questions,
-                convert_to_numpy=True,
-                show_progress_bar=True
-            )
+            self._build_faiss_index(index_filename)
 
-            # L2 normalize for cosine similarity
-            faiss.normalize_L2(query_embeddings)
+    def _load_faiss_index(self, index_filename):
+        """Load existing FAISS index from file."""
+        print(f"Loading existing FAISS index from {index_filename}...")
+        self.index = faiss.read_index(index_filename)
+        print(f"Loaded index with {self.index.ntotal} vectors")
 
-            print("Building FAISS index...")
-            self.index = faiss.IndexFlatIP(query_embeddings.shape[1])
-            self.index.add(query_embeddings)
+    def _build_faiss_index(self, index_filename):
+        """Build new FAISS index and save to file."""
+        print("Building new FAISS index...")
+        print("Embedding questions...")
+        query_embeddings = self.model.encode(
+            self.questions,
+            convert_to_numpy=True,
+            show_progress_bar=True
+        )
 
-            print(f"Number of vectors in the index: {self.index.ntotal}")
+        # L2 normalize for cosine similarity
+        faiss.normalize_L2(query_embeddings)
 
-            # Save FAISS index
-            print(f"Saving FAISS index to {index_filename}...")
-            faiss.write_index(self.index, index_filename)
+        print("Building FAISS index...")
+        self.index = faiss.IndexFlatIP(query_embeddings.shape[1])
+        self.index.add(query_embeddings)
+
+        print(f"Number of vectors in the index: {self.index.ntotal}")
+
+        # Save FAISS index
+        print(f"Saving FAISS index to {index_filename}...")
+        faiss.write_index(self.index, index_filename)
 
     def _build_or_load_bm25(self):
         """Build or load BM25 index."""
-        from rank_bm25 import BM25Okapi
-        import pickle
-        import os
-
         bm25_filename = "bm25_index_with_null.pkl" if self.use_null else "bm25_index_filtered.pkl"
 
-        if os.path.exists(bm25_filename):
-            print(f"Loading existing BM25 index from {bm25_filename}...")
-            with open(bm25_filename, "rb") as f:
-                self.bm25 = pickle.load(f)
+        if os.path.exists(bm25_filename) and not self.build_new_index:
+            self._load_bm25_index(bm25_filename)
         else:
-            print("Building new BM25 index...")
-            # Tokenize corpus
-            tokenized_corpus = [doc.split() for doc in self.corpus]
-            self.bm25 = BM25Okapi(tokenized_corpus)
+            self._build_bm25_index(bm25_filename)
 
-            # Save BM25 index
-            print(f"Saving BM25 index to {bm25_filename}...")
-            with open(bm25_filename, "wb") as f:
-                pickle.dump(self.bm25, f)
+    def _load_bm25_index(self, bm25_filename):
+        """Load existing BM25 index from file."""
+        from rank_bm25 import BM25Okapi
+        import pickle
+        
+        print(f"Loading existing BM25 index from {bm25_filename}...")
+        with open(bm25_filename, "rb") as f:
+            self.bm25 = pickle.load(f)
+
+    def _build_bm25_index(self, bm25_filename):
+        """Build new BM25 index and save to file."""
+        from rank_bm25 import BM25Okapi
+        import pickle
+        
+        print("Building new BM25 index...")
+        # Tokenize corpus
+        tokenized_corpus = [doc.split() for doc in self.corpus]
+        self.bm25 = BM25Okapi(tokenized_corpus)
+
+        # Save BM25 index
+        print(f"Saving BM25 index to {bm25_filename}...")
+        with open(bm25_filename, "wb") as f:
+            pickle.dump(self.bm25, f)
 
     def retrieve(self, query):
         """Retrieve top-k similar questions using hybrid search."""
@@ -129,7 +167,7 @@ class Retriever:
             faiss_results.append({
                 'label_id': label_id,
                 'score': float(score),
-                'sql': self.train_label_data[label_id],
+                'sql': self.total_label_data[label_id],
                 'question': self.questions[idx]
             })
 
@@ -145,7 +183,7 @@ class Retriever:
             bm25_results.append({
                 'label_id': label_id,
                 'score': float(sparse_scores[idx]),
-                'sql': self.train_label_data[label_id],
+                'sql': self.total_label_data[label_id],
                 'question': self.questions[idx]
             })
 
@@ -170,7 +208,7 @@ class Retriever:
             hybrid_results.append({
                 'label_id': label_id,
                 'score': float(final_scores[idx]),
-                'sql': self.train_label_data[label_id],
+                'sql': self.total_label_data[label_id],
                 'question': self.questions[idx]
             })
 
@@ -180,18 +218,14 @@ class Retriever:
 # Example usage
 if __name__ == "__main__":
     # File paths
-    TRAIN_DATA_PATH = 'data/augmented/train_data.json'
-    TRAIN_LABEL_PATH = 'data/augmented/train_label.json'
-    VALID_DATA_PATH = 'data/augmented/valid_data.json'
-    VALID_LABEL_PATH = 'data/augmented/valid_label.json'
+    DATA_PATH = 'data/augmented'
 
     # Initialize retriever with filtered data (no NULL labels)
     retriever = Retriever(
-        TRAIN_DATA_PATH,
-        TRAIN_LABEL_PATH,
-        VALID_DATA_PATH,
-        VALID_LABEL_PATH,
-        use_null=True
+        DATA_PATH,
+        use_null=True,
+        use_valid_data=False,
+        use_test_data=True
     )
 
     # Test query
