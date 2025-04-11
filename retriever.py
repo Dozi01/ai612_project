@@ -81,7 +81,19 @@ class Retriever:
 
     def _build_or_load_index(self):
         """Build or load the FAISS index for similarity search."""
-        index_filename = "faiss_index_with_null.bin" if self.use_null else "faiss_index_filtered.bin"
+
+        base = "faiss_index"
+        if self.use_null:
+            base += "_with_null"
+        else:
+            base += "_filtered"
+        if self.use_valid_data:
+            base += "_with_valid"
+        if self.use_test_data:
+            base += "_with_test"
+
+        index_filename = f"{base}.bin"
+        print(f"Index filename: {index_filename}")
 
         if os.path.exists(index_filename) and not self.build_new_index:
             self._load_faiss_index(index_filename)
@@ -130,7 +142,7 @@ class Retriever:
         """Load existing BM25 index from file."""
         from rank_bm25 import BM25Okapi
         import pickle
-        
+
         print(f"Loading existing BM25 index from {bm25_filename}...")
         with open(bm25_filename, "rb") as f:
             self.bm25 = pickle.load(f)
@@ -139,7 +151,7 @@ class Retriever:
         """Build new BM25 index and save to file."""
         from rank_bm25 import BM25Okapi
         import pickle
-        
+
         print("Building new BM25 index...")
         # Tokenize corpus
         tokenized_corpus = [doc.split() for doc in self.corpus]
@@ -214,7 +226,7 @@ class Retriever:
 
         # return faiss_results, bm25_results, hybrid_results
         return hybrid_results
-    
+
 # Example usage
 if __name__ == "__main__":
     # File paths
@@ -224,7 +236,7 @@ if __name__ == "__main__":
     retriever = Retriever(
         DATA_PATH,
         use_null=True,
-        use_valid_data=False,
+        use_valid_data=True,
         use_test_data=True
     )
 
@@ -233,21 +245,22 @@ if __name__ == "__main__":
     print(f"\nTest query: {test_query}")
 
     # Get results
-    faiss_results, bm25_results, hybrid_results = retriever.retrieve(test_query)
+    # faiss_results, bm25_results, hybrid_results = retriever.retrieve(test_query)
+    hybrid_results = retriever.retrieve(test_query)
 
-    # Print FAISS results
-    print("\nFAISS Results:")
-    for rank, result in enumerate(faiss_results, 1):
-        print(f"{rank}. Label ID: {result['label_id']} | Score: {result['score']:.4f}")
-        print(f"   Question: {result['question']}")
-        print(f"   SQL: {result['sql']}\n")
+    # # Print FAISS results
+    # print("\nFAISS Results:")
+    # for rank, result in enumerate(faiss_results, 1):
+    #     print(f"{rank}. Label ID: {result['label_id']} | Score: {result['score']:.4f}")
+    #     print(f"   Question: {result['question']}")
+    #     print(f"   SQL: {result['sql']}\n")
 
-    # Print BM25 results
-    print("\nBM25 Results:")
-    for rank, result in enumerate(bm25_results, 1):
-        print(f"{rank}. Label ID: {result['label_id']} | Score: {result['score']:.4f}")
-        print(f"   Question: {result['question']}")
-        print(f"   SQL: {result['sql']}\n")
+    # # Print BM25 results
+    # print("\nBM25 Results:")
+    # for rank, result in enumerate(bm25_results, 1):
+    #     print(f"{rank}. Label ID: {result['label_id']} | Score: {result['score']:.4f}")
+    #     print(f"   Question: {result['question']}")
+    #     print(f"   SQL: {result['sql']}\n")
 
     # Print Hybrid results
     print("\nHybrid Results:")
