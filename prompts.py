@@ -13,17 +13,18 @@ answerable_classification_user_prompt = """Your task is to classify the followin
 ### [Unanswerable questions]
 - Vague questions
 - Questions that have nothing to do with medical data
-- Questions that have no relation to the tables
-- Questions that are not answerable with the given data
 - Questions that are plausible but with no related table.
 
 ### [Answerable questions]
 - Questions that are answerable with the given tables
 
-### Here are some examples of answerable questions:
-"What was the prescription drug that patient 10004235 was prescribed for within the same hospital visit after receiving laparoscopic robotic assisted procedure since 03/2100?"
-"What is patient 10021487's monthly average bilirubin, direct levels since 05/2100?"
-"What is the average number of days between a patient's first and second hospital visits?"
+### Here are some examples of answerable questions and the reason for why they are answerable:
+"Can you list the yearly maximum vital high protein (full) input of patient 10019777?"
+- The question is answerable because the d_items table links "vital high protein (full)" to inputevents, which records totalamount and starttime. The SQL query can be generated to correctly filters by patient ID, groups by year, and calculates the maximum input.
+"What were the top five most common output events since 2100?"
+- The question is answerable because "since 2100" includes all timestamps from the year 2100 onward, not just future data. If the dataset contains records from 2100 or later, valid results can be retrieved. 
+"What is the number of times that patient 10018081 had ostomy (output) since 12/03/2100?"
+- The question is answerable because "ostomy (output)" is a recorded event in the dataset, and the required patient identification and time filtering can be performed using available tables. The term "ostomy (output)" exists in the data schema, making it possible to count occurrences.
 
 ### And these examples of unanswerable questions:
 "What is the meaning of life?"
@@ -51,6 +52,35 @@ Remember to provide thorough reasoning before giving the final score.
 {USER_QUESTION}
 """
 
+answerable_classification_user_prompt_hard = """Your task is to classify the following user question as answerable or unanswerable based on the SQL tables and the assumptions:
+
+### [Unanswerable questions]
+- Vague questions
+- Questions that have nothing to do with medical data
+- Questions that are plausible but with no related table.
+
+### [Answerable questions]
+- Questions that are answerable with the given tables
+
+### Here are some examples, where null means unanswerable:
+{EXAMPLES}
+
+Finally, classify the question as either Answerable or Unanswerable(null) based on the following criteria:
+
+- Answerable: The question can be fully answered using the available tables and data
+- null: The question is vague, unrelated to medical data, or cannot be answered with the given tables
+
+Present your response in the following format:
+<classification>
+[Answerable/null]
+</classification>
+
+Remember to provide thorough reasoning before giving the final classification.
+
+### User question:
+{USER_QUESTION}
+"""
+
 
 sql_generation_system_prompt = """You are an AI assistant tasked with generating a SQL query to answer a given user question. Your job is to generate a valid SQL query that can be executed on the provided SQL tables.
 
@@ -64,15 +94,7 @@ sql_generation_system_prompt = """You are an AI assistant tasked with generating
 sql_generation_user_prompt = """Your task is to generate a SQL query to answer the following user question:
 
 ### Examples:
-NLQ-1: "What is patient 10021487's monthly average bilirubin, direct levels since 05/2100?"
-SQL-1: "SELECT AVG(labevents.valuenum) FROM labevents WHERE labevents.hadm_id IN ( SELECT admissions.hadm_id FROM admissions WHERE admissions.subject_id = 10021487 ) AND labevents.itemid IN ( SELECT d_labitems.itemid FROM d_labitems WHERE d_labitems.label = 'bilirubin, direct' ) AND strftime('%Y-%m',labevents.charttime) >= '2100-05' GROUP BY strftime('%Y-%m',labevents.charttime)"
-
-NLQ-2: "How many days have passed since patient 10018081 first received a lab test during this hospital visit for po2?"
-SQL-2: "SELECT 1 * ( strftime('%J',current_time) - strftime('%J', labevents.charttime) ) FROM labevents WHERE labevents.itemid IN ( SELECT d_labitems.itemid FROM d_labitems WHERE d_labitems.label = 'po2' ) AND labevents.hadm_id IN ( SELECT admissions.hadm_id FROM admissions WHERE admissions.subject_id = 10018081 AND admissions.dischtime IS NULL ) ORDER BY labevents.charttime ASC LIMIT 1"
-
-NLQ-3: "Did patient 10009035 go through any type of procedure during their first hospital visit?"
-SQL-3: "SELECT COUNT(*)>0 FROM procedures_icd WHERE procedures_icd.hadm_id IN ( SELECT admissions.hadm_id FROM admissions WHERE admissions.subject_id = 10009035 AND admissions.dischtime IS NOT NULL ORDER BY admissions.admittime ASC LIMIT 1 )"
-
+{EXAMPLES}
 
 NLQ: {USER_QUESTION} 
 SQL:
@@ -91,7 +113,7 @@ sql_repair_system_prompt = """You are an AI assistant tasked with repairing a SQ
 
 sql_repair_user_prompt = """Your task is to repair the following SQL query that was generated to answer the following user question:
 
-NLQ: {USER_QUESTION}
+NLQ: {USER_QUESTION} 
 
 ### Here is the original SQL query:
 {SQL_QUERY}
