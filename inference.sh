@@ -14,6 +14,10 @@ MAX_RETRY=2
 NUM_CONSISTENCY_CHECK=3
 SEED=1004
 
+#### RETRIEVER
+TOP_K=10
+HYBRID_WEIGHT=0.5
+
 python -m inference --data_dir $DATA_DIR \
     --data_split $DATA_SPLIT \
     --data_num $DATA_NUM \
@@ -24,4 +28,6 @@ python -m inference --data_dir $DATA_DIR \
     --is_hard_classification $IS_HARD_CLASSIFICATION \
     --max_retry $MAX_RETRY \
     --num_consistency_check $NUM_CONSISTENCY_CHECK \
-    --seed $SEED
+    --seed $SEED \
+    --retriever_top_k $TOP_K \
+    --hybrid_weight $HYBRID_WEIGHT \

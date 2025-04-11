@@ -75,7 +75,9 @@ Present your response in the following format:
 [Answerable/null]
 </classification>
 
-Remember to provide thorough reasoning before giving the final classification.
+It would be helpful to first identify which tables are relevant to the question.
+Identify the relevant columns from the tables, make inferences based on the table and column.
+Write the answer according to the predefined format above.
 
 ### User question:
 {USER_QUESTION}

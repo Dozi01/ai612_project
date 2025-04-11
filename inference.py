@@ -14,12 +14,12 @@ from scoring.scorer import Scorer
 
 import datetime
 from tqdm import tqdm
-from rich import print
+# from rich import print
 
 def main(
-    data_dir, 
-    data_split, 
-    data_num, 
+    data_dir,
+    data_split,
+    data_num,
     data_null_ratio,
     model_name,
     temperature,
@@ -27,8 +27,9 @@ def main(
     threshold_for_classification,
     is_hard_classification,
     retriever_top_k,
+    hybrid_weight,
     num_consistency_check,
-    seed
+    seed,
     ):
     random.seed(seed)
 
@@ -45,7 +46,7 @@ def main(
     LABEL_PATH = os.path.join(
         BASE_DATA_DIR, data_dir, f"{data_split}_label.json"
     )  # JSON file for validation labels (for evaluation)
-    
+
     TRAIN_DATA_PATH = "./data/augmented/train_data.json"
     TRAIN_LABEL_PATH = "./data/augmented/train_label.json"
     VALID_DATA_PATH = 'data/augmented/valid_data.json'
@@ -76,6 +77,7 @@ def main(
         VALID_DATA_PATH,
         VALID_LABEL_PATH,
         top_k=retriever_top_k,
+        hybrid_weight=hybrid_weight,
     )
     # If augmented data, select unanswerable data as well
     if data_dir == "augmented":
@@ -102,7 +104,6 @@ def main(
         DB_ID, db_schema, primary_key, foreign_key, assumptions
     )
     table_prompt = table_columns + sql_assumptions
-
 
     #################### Answerable Classification ####################
     def perform_answerable_classification(data, model, retriever, table_columns, sql_assumptions, num_consistency_check, is_hard_classification=False):
@@ -134,7 +135,7 @@ def main(
                     },
                 ]
             )
-        
+
 
         # Initialize dictionaries for storing results
         classification_result_dict = {sample["id"]: [] for sample in data}
@@ -213,51 +214,63 @@ def main(
     for id, response in tqdm(result_dict.items()):
         generated_sql = post_process_sql(response)
         retry_count = 0
+        sql_result = evaluator.execute(db_id=DB_ID, sql=generated_sql, is_gold_sql=False)
 
-        while retry_count < max_retry:
-            sql_result = evaluator.execute(db_id=DB_ID, sql=generated_sql, is_gold_sql=False)
-
-            if classification_score_dict[id] == 0: # If the answerable score is 0, abstain the query.
+        if classification_score_dict[id] == 0:  # If the answerable score is 0, abstain the query.
+            result_dict[id] = "null"
+        elif (len(sql_result) > 3 and 
+              "Error" not in sql_result and 
+              'None' not in sql_result):  # Accept query if result is valid and non-empty
+            result_dict[id] = generated_sql
+        else:
+            # If max_retry is 0, directly abstain
+            if max_retry == 0:
                 result_dict[id] = "null"
-                break
-            elif len(sql_result) > 3 and "Error" not in sql_result: # If the SQL result is not empty and does not contain "Error", accept the query.
-                result_dict[id] = generated_sql
-                break
+                print(f"Abstain for ID {id} because max_retry is 0.")
+            else:
+                # Only attempt retries if max_retry > 0
+                while retry_count < max_retry:
+                    print(
+                        f"[Retry {retry_count+1}] SQL Execution Failed for ID : {id}\nSQL_RESULT: {sql_result}\nGENERATED_SQL: {generated_sql}\n\n"
+                    )
 
-            print(
-                f"[Retry {retry_count+1}] SQL Execution Failed for ID : {id}\nSQL_RESULT: {sql_result}\nGENERATED_SQL: {generated_sql}\n\n"
-            )
+                    retry_prompt = [
+                        {
+                            "role": "system",
+                            "content": prompts.sql_repair_system_prompt.format(
+                                SQL_TABLES=table_columns, SQL_ASSUMPTIONS=sql_assumptions
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": prompts.sql_repair_user_prompt.format(
+                                USER_QUESTION=next(sample["question"] for sample in data if sample["id"] == id),
+                                SQL_QUERY=generated_sql,
+                                ERROR_MESSAGE=sql_result if sql_result != "" else "Correct syntax, but no matching result.",
+                            ),
+                        },
+                    ]
 
-            retry_prompt = [
-                {
-                    "role": "system",
-                    "content": prompts.sql_repair_system_prompt.format(
-                        SQL_TABLES=table_columns, SQL_ASSUMPTIONS=sql_assumptions
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": prompts.sql_repair_user_prompt.format(
-                        USER_QUESTION=next(sample["question"] for sample in data if sample["id"] == id),
-                        SQL_QUERY=generated_sql,
-                        ERROR_MESSAGE=sql_result if sql_result != "" else "Correct syntax, but no matching result.",
-                    ),
-                },
-            ]
+                    new_response = model.generate(retry_prompt)
+                    generated_sql = post_process_sql(new_response)
+                    sql_result = evaluator.execute(db_id=DB_ID, sql=generated_sql, is_gold_sql=False)
 
-            new_response = model.generate(retry_prompt)
-            generated_sql = post_process_sql(new_response)
+                    if (len(sql_result) > 3 and 
+                        "Error" not in sql_result and 
+                        'None' not in sql_result):
+                        result_dict[id] = generated_sql
+                        break
 
-            retry_count += 1
+                    retry_count += 1
+
+                if retry_count == max_retry:
+                    print(
+                        f"Abstain for ID {id} because retry {max_retry} times but still not answerable."
+                    )
+                    result_dict[id] = "null"
 
         retry_count_dict[id] = retry_count
         sql_result_dict[id] = sql_result
-        # Abstain for the query that still not answerable.
-        if retry_count == max_retry:
-            print(
-                f"Abstain for ID {id} because retry {max_retry} times but still not answerable."
-            )
-            result_dict[id] = "null" #TODO Check this null is correctly abstain the query.
 
 
     ############### SAVE ###############
@@ -326,8 +339,10 @@ if __name__ == '__main__':
     parser.add_argument('--num_consistency_check', type=int, default=3, help='Number of consistency check')
 
     parser.add_argument('--retriever_top_k', type=int, default=5, help='Number of top k for retriever')
+    parser.add_argument('--hybrid_weight', type=float, default=0.5, help='Hybrid weight for retriever')
 
     parser.add_argument('--seed', type=int, default=1234, help='Random seed')
+    
 
     args = parser.parse_args()
     main(**vars(args))

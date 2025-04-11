@@ -7,7 +7,7 @@ from rich import print
 
 
 class Retriever:
-    def __init__(self, train_data_path, train_label_path, valid_data_path, valid_label_path, model_name='emilyalsentzer/Bio_ClinicalBERT', top_k=10, hybrid_weight=0.5, use_null=False):
+    def __init__(self, train_data_path, train_label_path, valid_data_path, valid_label_path, model_name='emilyalsentzer/Bio_ClinicalBERT', top_k=10, hybrid_weight=0.5, use_null=True):
         """Initialize the Retriever with data paths and model."""
         self.train_data_path = train_data_path
         self.train_label_path = train_label_path
@@ -174,8 +174,9 @@ class Retriever:
                 'question': self.questions[idx]
             })
 
-        return faiss_results, bm25_results, hybrid_results
-
+        # return faiss_results, bm25_results, hybrid_results
+        return hybrid_results
+    
 # Example usage
 if __name__ == "__main__":
     # File paths
