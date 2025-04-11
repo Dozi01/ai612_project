@@ -32,6 +32,25 @@ class Retriever:
         # Load data
         self._load_data()
 
+        index_base = "faiss_index"
+        bm25_base = "bm25_index"
+        if self.use_null:
+            index_base  += "_with_null"
+            bm25_base   += "_with_null"
+        else:
+            index_base  += "_filtered"
+            bm25_base   += "_filtered"
+        if self.use_valid_data:
+            index_base  += "_with_valid"
+            bm25_base   += "_with_valid"
+        if self.use_test_data:
+            index_base  += "_with_test"
+            bm25_base   += "_with_test"
+
+        self.index_filename = f"{index_base}.bin"
+        self.bm25_filename = f"{bm25_base}.pkl"
+        print(f"Index filename: {self.index_filename}")
+        print(f"BM25 filename: {self.bm25_filename}")
         # Build or load indexes
         self._build_or_load_index()
         self._build_or_load_bm25()
@@ -82,31 +101,18 @@ class Retriever:
     def _build_or_load_index(self):
         """Build or load the FAISS index for similarity search."""
 
-        base = "faiss_index"
-        if self.use_null:
-            base += "_with_null"
+        if os.path.exists(self.index_filename) and not self.build_new_index:
+            self._load_faiss_index()
         else:
-            base += "_filtered"
-        if self.use_valid_data:
-            base += "_with_valid"
-        if self.use_test_data:
-            base += "_with_test"
+            self._build_faiss_index()
 
-        index_filename = f"{base}.bin"
-        print(f"Index filename: {index_filename}")
-
-        if os.path.exists(index_filename) and not self.build_new_index:
-            self._load_faiss_index(index_filename)
-        else:
-            self._build_faiss_index(index_filename)
-
-    def _load_faiss_index(self, index_filename):
+    def _load_faiss_index(self):
         """Load existing FAISS index from file."""
-        print(f"Loading existing FAISS index from {index_filename}...")
-        self.index = faiss.read_index(index_filename)
+        print(f"Loading existing FAISS index from {self.index_filename}...")
+        self.index = faiss.read_index(self.index_filename)
         print(f"Loaded index with {self.index.ntotal} vectors")
 
-    def _build_faiss_index(self, index_filename):
+    def _build_faiss_index(self):
         """Build new FAISS index and save to file."""
         print("Building new FAISS index...")
         print("Embedding questions...")
@@ -126,28 +132,27 @@ class Retriever:
         print(f"Number of vectors in the index: {self.index.ntotal}")
 
         # Save FAISS index
-        print(f"Saving FAISS index to {index_filename}...")
-        faiss.write_index(self.index, index_filename)
+        print(f"Saving FAISS index to {self.index_filename}...")
+        faiss.write_index(self.index, self.index_filename)
 
     def _build_or_load_bm25(self):
         """Build or load BM25 index."""
-        bm25_filename = "bm25_index_with_null.pkl" if self.use_null else "bm25_index_filtered.pkl"
 
-        if os.path.exists(bm25_filename) and not self.build_new_index:
-            self._load_bm25_index(bm25_filename)
+        if os.path.exists(self.bm25_filename) and not self.build_new_index:
+            self._load_bm25_index()
         else:
-            self._build_bm25_index(bm25_filename)
+            self._build_bm25_index()
 
-    def _load_bm25_index(self, bm25_filename):
+    def _load_bm25_index(self):
         """Load existing BM25 index from file."""
         from rank_bm25 import BM25Okapi
         import pickle
 
-        print(f"Loading existing BM25 index from {bm25_filename}...")
-        with open(bm25_filename, "rb") as f:
+        print(f"Loading existing BM25 index from {self.bm25_filename}...")
+        with open(self.bm25_filename, "rb") as f:
             self.bm25 = pickle.load(f)
 
-    def _build_bm25_index(self, bm25_filename):
+    def _build_bm25_index(self):
         """Build new BM25 index and save to file."""
         from rank_bm25 import BM25Okapi
         import pickle
@@ -158,8 +163,8 @@ class Retriever:
         self.bm25 = BM25Okapi(tokenized_corpus)
 
         # Save BM25 index
-        print(f"Saving BM25 index to {bm25_filename}...")
-        with open(bm25_filename, "wb") as f:
+        print(f"Saving BM25 index to {self.bm25_filename}...")
+        with open(self.bm25_filename, "wb") as f:
             pickle.dump(self.bm25, f)
 
     def retrieve(self, query):
