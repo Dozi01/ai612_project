@@ -26,6 +26,8 @@ def main(
     max_retry,
     threshold_for_classification,
     is_hard_classification,
+    use_valid_data,
+    use_test_data,
     retriever_top_k,
     hybrid_weight,
     num_consistency_check,
@@ -47,11 +49,7 @@ def main(
         BASE_DATA_DIR, data_dir, f"{data_split}_label.json"
     )  # JSON file for validation labels (for evaluation)
 
-    TRAIN_DATA_PATH = "./data/augmented/train_data.json"
-    TRAIN_LABEL_PATH = "./data/augmented/train_label.json"
-    VALID_DATA_PATH = 'data/augmented/valid_data.json'
-    VALID_LABEL_PATH = 'data/augmented/valid_label.json'
-
+    RETRIEVER_DATA_PATH = "./data/augmented"
 
     DB_PATH = os.path.join("database", DB_ID, f"{DB_ID}.sqlite")  # Database path
 
@@ -72,12 +70,11 @@ def main(
     evaluator = SQLEvaluator(data_dir="database", dataset=DB_ID)
 
     retriever = Retriever(
-        TRAIN_DATA_PATH,
-        TRAIN_LABEL_PATH,
-        VALID_DATA_PATH,
-        VALID_LABEL_PATH,
+        RETRIEVER_DATA_PATH,
         top_k=retriever_top_k,
         hybrid_weight=hybrid_weight,
+        use_valid_data=use_valid_data,
+        use_test_data=use_test_data,
     )
     # If augmented data, select unanswerable data as well
     if data_dir == "augmented":
@@ -340,6 +337,9 @@ if __name__ == '__main__':
 
     parser.add_argument('--retriever_top_k', type=int, default=5, help='Number of top k for retriever')
     parser.add_argument('--hybrid_weight', type=float, default=0.5, help='Hybrid weight for retriever')
+
+    parser.add_argument('--use_valid_data', type=bool, default=False, help='Whether to use valid data')
+    parser.add_argument('--use_test_data', type=bool, default=False, help='Whether to use test data')
 
     parser.add_argument('--seed', type=int, default=1234, help='Random seed')
     
